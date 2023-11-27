@@ -10,7 +10,8 @@ from flax.training.train_state import TrainState
 import distrax
 import gymnax
 from purejaxrl.wrappers import LogWrapper, FlattenObservationWrapper
-from StockEnv_copy_copy import StockEnv
+from StockEnv_RW import StockEnv_RW
+from StockEnv_GBM import StockEnv_GBM   
 import matplotlib.pyplot as plt
 
 
@@ -71,7 +72,7 @@ def make_train(config):
         config["NUM_ENVS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
     )
 
-    env = StockEnv()
+    env = StockEnv_RW()
     env_params=env.default_params
     env = FlattenObservationWrapper(env)
     env = LogWrapper(env)
@@ -123,7 +124,7 @@ def make_train(config):
                 rng, _rng = jax.random.split(rng)
                 pi, value = network.apply(train_state.params, last_obs)
                 action = pi.sample(seed=_rng)
-            
+                action = jnp.clip(action, 0, env_state.env_state.quant_remaining)
                 log_prob = pi.log_prob(action)
                 # STEP ENV
                 rng, _rng = jax.random.split(rng)
@@ -282,42 +283,32 @@ def make_train(config):
 if __name__ == "__main__":
     config = {
         "LR": 2.5e-4,
-        "NUM_ENVS": 10,
+        "NUM_ENVS": 100,
         "NUM_STEPS": 150,
-        "TOTAL_TIMESTEPS": 1e5,
+        "TOTAL_TIMESTEPS": 1e8,
         "UPDATE_EPOCHS": 4,
         "NUM_MINIBATCHES": 4,
         "GAMMA": 1,
         "GAE_LAMBDA": 0.98,
         "CLIP_EPS": 0.2,
-        "ENT_COEF": 0.05,
+        "ENT_COEF": 0.01,
         "VF_COEF": 0.5,
         "MAX_GRAD_NORM": 0.5,
         "ACTIVATION": "tanh",
         "ANNEAL_LR": True,
         "DEBUG": True,
     }
-    rng = jax.random.PRNGKey(30)
+    rng = jax.random.PRNGKey(123)
     train_jit = jax.jit(make_train(config))
     out = train_jit(rng)
     train_state = out['runner_state'][0]
     params = train_state.params
 
-    # with open("/workspaces/Trade", 'wb') as f:
-    #     f.write(flax.serialization.to_bytes(params))
-    #     print(f"pramas saved")
-
-    # plt.plot(out["metrics"]["revenue"].mean(-1).reshape(-1))
-    # plt.xlabel("Updates")
-    # plt.ylabel("Return")
-    # plt.show()
-    # plt.savefig('loss.png')
-
     plt.plot(out["metrics"]["returned_episode_returns"].mean(-1).reshape(-1))
     plt.xlabel("Update Step")
     plt.ylabel("Return")
     plt.show()
-    plt.savefig('loss_6.png')
+    plt.savefig('loss_15.png')
 
     config["NUM_UPDATES"] = (
         config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
@@ -336,7 +327,7 @@ if __name__ == "__main__":
 
 
     
-    env = StockEnv()
+    env = StockEnv_RW()
     env_params=env.default_params
     env = FlattenObservationWrapper(env)
     env = LogWrapper(env)
@@ -371,10 +362,11 @@ if __name__ == "__main__":
     reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
     obsv, env_state = jax.vmap(env.reset, in_axes=(0, None))(reset_rng, env_params)
     for i in range(100):
-
         pi, value = network.apply(train_state.params, obsv)
         action = pi.sample(seed=_rng)
+        print("before_action",action)
         # action = jnp.array([1,1,1,1,1,1,1,1,1,1])
+        action = jnp.clip(action, 0, env_state.env_state.quant_remaining)
 
         print("action",action)
         rng, _rng = jax.random.split(rng)
@@ -382,12 +374,36 @@ if __name__ == "__main__":
         obsv, env_state, reward, done, info = jax.vmap(
             env.step, in_axes=(0, 0, 0, None)
         )(rng_step, env_state, action, env_params)
+
+        print("return",info["returned_episode_returns"])
+        print("return_avg",jnp.mean(info["returned_episode_returns"]))
+
+
+    # rng, _rng = jax.random.split(rng)
+    # reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
+    # obsv, env_state = jax.vmap(env.reset, in_axes=(0, None))(reset_rng, env_params)
+
+    # for i in range(100):
+    #     pi, value = network.apply(train_state.params, obsv)
+    #     action = pi.sample(seed=_rng)
+    #     # print("before_action",action)
+    #     action = jnp.array([1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1])
+    #     action = jnp.clip(action, 0, env_state.env_state.quant_remaining)
+
+    #     print("action",action)
+    #     rng, _rng = jax.random.split(rng)
+    #     rng_step = jax.random.split(_rng, config["NUM_ENVS"])
+    #     obsv, env_state, reward, done, info = jax.vmap(
+    #         env.step, in_axes=(0, 0, 0, None)
+    #     )(rng_step, env_state, action, env_params)
+
+    #     print(info["returned_episode_returns"])
         # print("env_state",env_state)
         # print("obsv",obsv)
-        print("info",info)
+        # print("info",info)
 
 
-#  sell one, 'returned_episode_returns': Array([74.75, 74.75, 74.75, 74.75, 74.75, 74.75, 74.75, 74.75, 74.75, 74.75]
+
 
 
 
