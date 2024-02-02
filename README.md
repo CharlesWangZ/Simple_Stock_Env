@@ -4,4 +4,6 @@ Stock_Env simulates a Brownian Motion with votality(sigma) with more then one ag
 
 PPO class contains the functions to behave in the environment.
 
-Run experiment.py to start training.
+experiment.py is a multi-agent training framework inspired by Pax: Scalable Opponent Shaping in JAX[^1]. Run experiment.py for training.
+
+[^1]: [supporting link](https://github.com/ucl-dark/pax/tree/main).
