@@ -20,15 +20,14 @@ wandb.init(
     project="shaper_vs_ppo",
 )
 
-
 NUM_ENV = 100
 NUM_STEPS = 10
 OUTER_STEPS = 1500
 NUM_ITERS = 1000
 POP_SIZE = 100
 
-ppo_config_1 = {
-    # "LR": 2.5e-4,
+shaper_config_1 = {
+    "LR": 2.5e-4,
     "NUM_ENVS": NUM_ENV,
     "NUM_STEPS": NUM_STEPS,
     "UPDATE_EPOCHS": 4,
@@ -47,6 +46,8 @@ ppo_config_1 = {
     "DEBUG": False,
 }
 
+
+# This is the best hyperparameter from single-PPO environment
 ppo_config_2 = {
     "LR": 2e-4,
     "NUM_ENVS": NUM_ENV,
@@ -83,15 +84,15 @@ class Transition(NamedTuple):
     obs: jnp.ndarrayn
     info: jnp.ndarray
 
-# rng = jax.random.PRNGKey(822)  
 rng = jax.random.PRNGKey(87654)  
 env = Stock_GBM_MULTI()
 env_params=env.default_params
 action_space = env.action_space().n
 observation_shape = env.observation_space(env_params).shape
 
-network_1 = ActorCriticRNN(action_dim=action_space, config=ppo_config_1)
-agent1_init_hstate = ScannedRNN.initialize_carry(config["NUM_ENVS"], ppo_config_1["HIDDEN_SIZE"])
+# Initialise shaper network
+network_1 = ActorCriticRNN(action_dim=action_space, config=shaper_config_1)
+agent1_init_hstate = ScannedRNN.initialize_carry(config["NUM_ENVS"], shaper_config_1["HIDDEN_SIZE"])
 rng, _rng = jax.random.split(rng)
 init_x = (
     jnp.zeros(
@@ -101,29 +102,8 @@ init_x = (
 )
 network_params_1 = network_1.init(_rng, agent1_init_hstate, init_x)
 param_reshaper = ParameterReshaper(network_params_1)
-# strategy = OpenES(POP_SIZE, 
-#                   param_reshaper.total_params, 
-#                   opt_name="adam", 
-#                   lrate_init=0.01,
-#                 #   sigma_init=0.03,
-#                 #   sigma_decay=0.999,
-#                 #   sigma_limit=0.01,
-#                 #   lrate_decay=0.999,
-#                   )
 
-# strategy = OpenES(POP_SIZE, 
-#                   parmam_reshaper.total_params, 
-#                   opt_name="adam", 
-#                   lrate_init=0.008,
-#                   sigma_init=0.03,
-#                   sigma_decay=0.9999,
-#                   sigma_limit=0.03,
-#                   lrate_decay=0.9999,
-#                   lrate_liit=0.001
-#                   )
-
-
-# In Figure
+# Initialise Evolutional Strategy shaper hyperparameters
 strategy = OpenES(POP_SIZE, 
                   param_reshaper.total_params, 
                   opt_name="adam", 
@@ -134,14 +114,6 @@ strategy = OpenES(POP_SIZE,
                   lrate_decay=0.99,
                 #   lrate_limit=0.001
                   )
-
-# strategy = OpenES(POP_SIZE, 
-#                   param_reshaper.total_params, 
-#                   opt_name="adam", 
-#                   lrate_init=0.005,
-#                   lrate_decay=0.99,
-#                   sigma_init=0.04,
-#                   sigma_decay=0.999,)
 es_params = strategy.default_params
 
 
@@ -150,10 +122,10 @@ fit_shaper = FitnessShaper(w_decay=0.1,
 rng, _rng = jax.random.split(rng)
 state = strategy.initialize(_rng, es_params)
 
+# Initialise PPO agent networks
 network_2 = ActorCriticRNN(action_dim=action_space, config=ppo_config_2)
 agent2 = PPO(network=network_2, config=ppo_config_2)
 agent2_train_state, agent2_init_hstate = agent2.initialise(observation_shape=observation_shape,rng=rng)
-# print(agent2_init_hstate[0].shape[-1])
 
 # Vmap envionments 
 env.batch_reset = jax.vmap(
@@ -166,10 +138,6 @@ env.batch_step = jax.vmap(
     out_axes=(0, 0, 0, 0, 0),
 )
 
-# Initialise env
-# reset_rng = jax.random.split(rng, config["NUM_ENVS"]) 
-# observations, env_state = env.batch_reset(reset_rng, env_params)
-
 # Define rollout function for NUM_STEPS
 def _inner_rollout(carry, inner_step):
     (params, agent2_train_state, env_state, last_obsv, last_done, env_params, agent1_hstate, agent2_hstate, rng) = carry
@@ -178,6 +146,7 @@ def _inner_rollout(carry, inner_step):
 
     rng, _rng = jax.random.split(rng)
     ac_in = (last_obs1[np.newaxis, :], last_d1[np.newaxis, :])
+    # Forward obsversations into network params to get actions
     agent1_hstate, pi_1, value_1 = network_1.apply(params, agent1_hstate, ac_in)
     action_1 = pi_1.sample(seed=_rng)
     action_1 = jnp.where(env_state.time_left <= 0, env_state.quant_remaining[:,0], action_1)
@@ -188,7 +157,6 @@ def _inner_rollout(carry, inner_step):
         action_1.squeeze(0),
         log_prob_1.squeeze(0),
     )
-
     rng, _rng = jax.random.split(rng)
     agent2_hstate, pi_2, value_2 = agent2.policy(agent2_train_state, last_obs2, last_d2, agent2_hstate)
     action_2 = pi_2.sample(seed=_rng)
@@ -201,13 +169,9 @@ def _inner_rollout(carry, inner_step):
         log_prob_2.squeeze(0),
     )
 
-    # last_a2 = env_state.last_action[:,0]
-    # action_1 = 0 * (action_2)
-    # action_1 = jnp.where(env_state.time_left <= 0, env_state.quant_remaining[:,0], action_1)
-    # action_1 = jnp.clip(action_1, 0, env_state.quant_remaining[:,0])
-
     rng, _rng = jax.random.split(rng)
     rng_step = jax.random.split(_rng, config["NUM_ENVS"])
+    # step the environments according to two agents' actions and store in the trajectories
     observations, env_state, rewards, dones, info = env.batch_step(
         rng_step, env_state, (action_1, action_2), env_params
     )
@@ -224,6 +188,7 @@ def _outer_rollout(carry, unused):
         None,
         length=config["NUM_STEPS"]
     )
+    # PPO agent updates its params according to its update rules
     params, agent2_train_state, env_state, observations, dones, env_params, agent1_hstate, agent2_hstate, rng = carry
     agent2_train_state, metric2 = agent2.update(traj_batch[1], observations[1], dones[1], agent2_init_hstate, agent2_hstate, agent2_train_state, rng)
     agent2_hstate = agent2.reset()
@@ -240,23 +205,11 @@ def rollout(rng, params, agent1_init_hstate, agent2_train_state, agent2_init_hst
         None,
         config["OUTER_STEPS"]
     )
-    # params, agent2_train_state, env_state, observations, dones , env_params, agent1_hstate, agent2_hstate, rng = carry
     rewards_1 = traj_1.reward.mean()
     rewards_2 = traj_2.reward.mean()
-    # action_1 = jnp.array([traj_1.action[0,:,0], traj_1.action[20,:,0], traj_1.action[50,:,0], traj_1.action[100,:,0], traj_1.action[200,:,0], traj_1.action[300,:,0], traj_1.action[400,:,0], traj_1.action[500,:,0], traj_1.action[600,:,0], traj_1.action[700,:,0], traj_1.action[800,:,0], traj_1.action[900,:,0], traj_1.action[1000,:,0]])
-    # action_2 = jnp.array([traj_2.action[0,:,0], traj_2.action[20,:,0], traj_2.action[50,:,0], traj_2.action[100,:,0], traj_2.action[200,:,0], traj_2.action[300,:,0], traj_2.action[400,:,0], traj_2.action[500,:,0], traj_2.action[600,:,0], traj_2.action[700,:,0], traj_2.action[800,:,0], traj_2.action[900,:,0], traj_2.action[1000,:,0]])
-    action_1 = jnp.array([traj_1.action[0,:,0], traj_1.action[20,:,0], traj_1.action[50,:,0], traj_1.action[100,:,0], traj_1.action[150,:,0], traj_1.action[200,:,0], traj_1.action[250,:,0], traj_1.action[300,:,0], traj_1.action[350,:,0], traj_1.action[400,:,0], traj_1.action[450,:,0], traj_1.action[500,:,0], traj_1.action[600,:,0], traj_1.action[700,:,0], traj_1.action[800,:,0], traj_1.action[900,:,0], traj_1.action[1000,:,0], traj_1.action[1200,:,0], traj_1.action[1500,:,0], traj_1.action[2000,:,0]])
-    action_2 = jnp.array([traj_2.action[0,:,0], traj_2.action[20,:,0], traj_2.action[50,:,0], traj_2.action[100,:,0], traj_2.action[150,:,0], traj_2.action[200,:,0], traj_2.action[250,:,0], traj_2.action[300,:,0], traj_2.action[350,:,0], traj_2.action[400,:,0], traj_2.action[450,:,0], traj_2.action[500,:,0], traj_2.action[600,:,0], traj_2.action[700,:,0], traj_2.action[800,:,0], traj_2.action[900,:,0], traj_2.action[1000,:,0], traj_2.action[1200,:,0], traj_2.action[1500,:,0], traj_2.action[2000,:,0]])
-    # action_2_traj = traj_2.action.reshape(-1, traj_2.action.shape[-1])
-    # action_2 = action_2_traj[:10, 0], action_2_traj[200:210, 0], action_2_traj[500:510, 0], action_2_traj[1000:1010, 0], action_2_traj[2000:2010, 0], action_2_traj[3000:3010, 0], action_2_traj[4000:4010, 0], action_2_traj[5000:5010, 0], action_2_traj[6000:6010, 0], action_2_traj[7000:7010, 0], action_2_traj[8000:8010, 0], action_2_traj[9000:9010, 0], action_2_traj[10000:10010, 0], action_2_traj[12000:12010, 0], action_2_traj[15000:15010, 0] , action_2_traj[19990:20000, 0]
+    return (rewards_1, rewards_2, traj_1.action, traj_2.action)
 
-    return (rewards_1, rewards_2, action_1, action_2)
-    # return (rewards_1, rewards_2, traj_1.action, traj_2.action)
 
-# Fitness_top = []
-# Fitness_ave = []
-# Other_Fitness_top = []
-# Other_Fitness_ave = []
 for i in range(NUM_ITERS):
     rng, rng_init, rng_ask, rng_eval = jax.random.split(rng, 4)
     x, state = strategy.ask(rng_ask, state, es_params)
@@ -265,27 +218,16 @@ for i in range(NUM_ITERS):
     agent2_train_state, agent2_init_hstate = agent2.initialise(observation_shape=observation_shape,rng=rng)
 
     batch_rollout = jax.vmap(rollout, in_axes=(None, 0, None, None, None, None), out_axes=(0,0,0,0))
-    # (fitness, other_fitness, traj_action_1, traj_action_2) = rollout(rng, network_params_1, agent1_init_hstate, agent2_train_state, agent2_init_hstate, env_params)
-
+    # vmap the rollout function to parallel computing
     (fitness, other_fitness, traj_action_1, traj_action_2) = batch_rollout(rng_eval, params, agent1_init_hstate, agent2_train_state, agent2_init_hstate, env_params)
     
     i_max = jnp.argmax(fitness)
     print(f"Iteration{i}")
     print("agent1_fitness:",fitness)
     print("agent2_fitness:",other_fitness)
-    print("ACTION_1 after first, 20, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1200, 1500, 2000 updates")
-    print(traj_action_1[i_max])
-    print("ACTION_2 after first, 20, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1200, 1500, 2000 updates")
-    print(traj_action_2[i_max])
-    
+
     fitness_re = fit_shaper.apply(x, fitness)
 
     state = strategy.tell(x, fitness_re, state, es_params)
-    # log = es_logging.update(log, x, fitness)
-    # Fitness_top.append(fitness[i_max])
-    # Fitness_ave.append(fitness.mean())
-    # Other_Fitness_top.append(other_fitness[i_max])
-    # Other_Fitness_ave.append(other_fitness.mean())
     print("Generation: ", i, "Top Performance: ", fitness[i_max], "Ave Performance", fitness.mean())
     wandb.log({"Fitness_top": fitness[i_max], "Fitness_ave": fitness.mean(), "Other_Fitness_top": other_fitness[i_max], "Other_Fitness_ave": other_fitness.mean(), "IS_1": -10.81, "IS_2": -11.81})
-    # wandb.log({"IS_1": -10.81, "IS_2": -10.57,})
